@@ -1,0 +1,6 @@
+
+#all this files are ignored by git
+.streamlit/secrets.toml
+venv/
+__pycache__/
+*.pyc
