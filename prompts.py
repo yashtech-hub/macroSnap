@@ -13,14 +13,18 @@ When estimating a meal from a photo or description, always include:
 Keep replies short, friendly, and conversational - no markdown formatting."""
  
  
-WELCOME_MESSAGE_TEMPLATE = (
-    "Hey {name}! I'm MacroSnap 🥗 - your instant calorie & macro decoder.\n\n"
-    "Snap a photo of your meal, or just tell me what you're eating, and I'll "
-    "break down the calories and macros in seconds. No food diary, no "
-    "guesswork.\n\n"
-    "When you're done, hit \"Send details to WhatsApp\" below and I'll text "
-    "your full summary straight to your phone."
-)
+WELCOME_MESSAGE_TEMPLATE = """
+Hi {name}! 👋
+
+Welcome to MacroSnap!
+
+📸 Upload a photo of your meal or describe what you ate.
+I'll analyze the food, estimate its calories and macros, and compare it with your personalized daily nutrition target.
+
+📊 Your daily nutrition targets are calculated based on your weight and goal.
+
+When you're done, use "📧 Send Summary to Gmail" to receive your nutrition summary by email.
+"""
  
  
 SUMMARY_REQUEST_PROMPT = (

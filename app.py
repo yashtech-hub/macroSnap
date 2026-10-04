@@ -3,147 +3,526 @@ from google import genai
 from google.genai import types
 import streamlit as st
 
-from twilio.rest import Client as TwilioClient
-from prompts import SYSTEM_PROMPT,WELCOME_MESSAGE_TEMPLATE,SUMMARY_REQUEST_PROMPT
+from prompts import (
+    SYSTEM_PROMPT,
+    WELCOME_MESSAGE_TEMPLATE,
+    SUMMARY_REQUEST_PROMPT
+)
 
-GEMINI_API_KEY=st.secrets["GEMINI_API_KEY"]#for accessing the api key from streamlit secrets
-TWILIO_ACCOUNT_SID=st.secrets["TWILIO_ACCOUNT_SID"]
-TWILIO_AUTH_TOKEN=st.secrets["TWILIO_AUTH_TOKEN"]
-TWILIO_WHATSAPP_FROM=st.secrets["TWILIO_WHATSAPP_FROM"]
-TWILIO_CONTENT_SID=st.secrets["TWILIO_CONTENT_SID"]
+from email_service import send_email
 
-@st.cache_resource#storing the gemini client in cache to avoid creating repeatedly
-def get_gemini_client():#for multiple usage of the gemini client without creating a new instance every time
+
+# ============================================================
+# GEMINI CONFIGURATION
+# ============================================================
+
+GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+
+
+@st.cache_resource
+def get_gemini_client():
     return genai.Client(api_key=GEMINI_API_KEY)
 
-@st.cache_resource#storing the twilio client in cache to avoid creating repeatedly
-def get_twilio_client():
-    return TwilioClient(TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN)
 
-#for calling st.cache_resource
-twilio_client = get_twilio_client()
 gemini_client = get_gemini_client()
-MODEL_NAME = "gemini-3.8-flash"
 
-def clean_whatsapp_text(text):
-    if not text:
-        return "No nutrition information available."
-    text=" ".join(text.split())#removes extra spaces and newlines
-    return text[:1500]+"..."  if len(text)>1500 else text #truncating the text to 1500 characters
+MODEL_NAME = "gemini-3.5-flash"
 
-def send_whatsapp(to_whatsapp_number, user_name, summary):
-    try:
-        content_variables=st.json.dumps(
-        {
-            "1": user_name,
-            "2": clean_whatsapp_text(summary)
-        },ensure_ascii=False)
-        message = twilio_client.messages.create(
-            from_=TWILIO_WHATSAPP_FROM,
-            to=f"whatsapp:{to_whatsapp_number}",
-            content_sid=TWILIO_CONTENT_SID,
-            content_variables=content_variables,
-        )  
-        return True, message.sid 
-    except Exception as error:
-        return False, str(error)
+
+# ============================================================
+# PERSONALIZED NUTRITION CALCULATION
+# ============================================================
+
+def calculate_nutrition_targets(weight, goal):
+
+    if goal == "Lose weight":
+        calories = weight * 25
+
+    elif goal == "Gain weight":
+        calories = weight * 35
+
+    else:
+        calories = weight * 30
+
+    protein = weight * 1.5
+    fat = weight * 0.8
+
+    carbs = (
+        calories
+        - (protein * 4)
+        - (fat * 9)
+    ) / 4
+
+    fiber = 25 + (weight * 0.1)
+
+    return {
+        "Calories": round(calories),
+        "Protein": round(protein),
+        "Carbohydrates": round(carbs),
+        "Fat": round(fat),
+        "Fiber": round(fiber)
+    }
+
+
+# ============================================================
+# MESSAGE FUNCTIONS
+# ============================================================
 
 def render_message(message):
+
     with st.chat_message(message["role"]):
-        if message["kind"]=="text":
+
+        if message["kind"] == "text":
+
             st.write(message["content"])
-        elif message["kind"]=="image":
+
+        elif message["kind"] == "image":
+
             st.image(message["content"])
 
-def add_message(role,kind,content):
-    st.session_state.messages.append({"role":role,"kind":kind,"content":content})
-    render_message(st.session_state.messages[-1])#for latest msg -1 used
+
+def add_message(role, kind, content):
+
+    st.session_state.messages.append(
+        {
+            "role": role,
+            "kind": kind,
+            "content": content
+        }
+    )
+
+    render_message(
+        st.session_state.messages[-1]
+    )
+
+
+# ============================================================
+# GEMINI FUNCTION
+# ============================================================
 
 def ask_gemini(parts):
-    try:
-        return  st.session_state.chat.send_message(parts).text
-    except Exception as e:
-        return f"Error communicating with Gemini API: {e}"
-#step 1:onboarding username and phone
 
-if 'onboarded' not in st.session_state:
-    st.title("MacroSnap - AI Powered Macro Generator")
-    st.caption("<<Snap it>>  <<Track it>> <<Text yourself the results>>")
+    try:
+
+        return st.session_state.chat.send_message(parts).text
+
+    except Exception as error:
+
+        return f"Error communicating with Gemini API: {error}"
+
+
+# ============================================================
+# ONBOARDING
+# ============================================================
+
+if "onboarded" not in st.session_state:
+
+    st.title(
+        "MacroSnap - AI Powered Macro Generator"
+    )
+
+    st.caption(
+        "📸 Snap it  |  📊 Track it  |  📧 Email your nutrition summary"
+    )
 
     with st.form("onboarding_form"):
-        name = st.text_input("Enter your name")
-        whatsapp_number = st.text_input(
-            "Enter your WhatsApp number(with country code)", 
-            placeholder="+91XXXXXXXXXX",
-            help="This is the number where you will receive your macros Summary to read"
+
+        name = st.text_input(
+            "Enter your name"
         )
-        submitted = st.form_submit_button("Submit")
+
+        email = st.text_input(
+            "Enter your email address",
+            placeholder="example@gmail.com",
+            help="This is the email address where your MacroSnap nutrition summary will be sent."
+        )
+
+        weight = st.number_input(
+            "Enter your weight (kg)",
+            min_value=20.0,
+            max_value=250.0,
+            value=70.0,
+            step=0.5
+        )
+
+        goal = st.selectbox(
+            "What is your goal?",
+            [
+                "Maintain weight",
+                "Lose weight",
+                "Gain weight"
+            ]
+        )
+
+        submitted = st.form_submit_button(
+            "Submit"
+        )
 
     if submitted:
-        if not name.strip() or not whatsapp_number.strip():
-            st.error("Please fill in both fields.")
-        else:
-            st.session_state.name = name.strip()
-            st.session_state.whatsapp_number = whatsapp_number.strip()
 
-            #activating ai 
-            st.session_state.chat=gemini_client.chats.create(
-                model=MODEL_NAME,
-                config=types.GenerateContentConfig(system_instructions=SYSTEM_PROMPT),
+        if not name.strip() or not email.strip():
+
+            st.error(
+                "Please fill in your name and email."
             )
-            st.session_state.messages = []#initially chat stays empty in whatsapp
+
+        else:
+
+            # Save user information
+            st.session_state.name = name.strip()
+            st.session_state.email = email.strip()
+            st.session_state.weight = weight
+            st.session_state.goal = goal
+
+            # Calculate personalized targets
+            st.session_state.targets = calculate_nutrition_targets(
+                weight,
+                goal
+            )
+
+            # Create Gemini chat
+            st.session_state.chat = gemini_client.chats.create(
+                model=MODEL_NAME,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT
+                ),
+            )
+
+            # Initially empty chat
+            st.session_state.messages = []
+
             st.session_state.onboarded = True
+
             st.rerun()
-    st.stop()  # Stop execution to wait for the next run after onboarding
 
-#create a chat interface 
+    st.stop()
 
-header_col,button_col=st.columns([5,2],vertical_alignment="center")
+
+# ============================================================
+# GET PERSONALIZED TARGETS
+# ============================================================
+
+targets = st.session_state.targets
+
+
+# ============================================================
+# MAIN HEADER
+# ============================================================
+
+header_col, button_col = st.columns(
+    [5, 2],
+    vertical_alignment="center"
+)
+
 
 with header_col:
-    st.title("MacroSnap - AI Powered Macro Generator")
+
+    st.title(
+        "MacroSnap - AI Powered Macro Generator"
+    )
+
+
+# ============================================================
+# SEND SUMMARY TO GMAIL
+# ============================================================
 
 with button_col:
-    send_disabled=len(st.session_state.messages)<=1
-    if st.button("Send Summary to WhatsApp",disabled=send_disabled,use_container_width=True):
-        with st.spinner("Summarizing your day..."):
-            summary=ask_gemini([SUMMARY_REQUEST_PROMPT])
-        success,info = send_whatsapp(st.session_state.whatsapp_number,st.session_state.name,summary)
+
+    send_disabled = len(
+        st.session_state.messages
+    ) <= 1
+
+    if st.button(
+        "📧 Send Summary to Gmail",
+        disabled=send_disabled,
+        use_container_width=True
+    ):
+
+        with st.spinner(
+            "Summarizing your day..."
+        ):
+
+            summary = ask_gemini(
+                [SUMMARY_REQUEST_PROMPT]
+            )
+
+        success, info = send_email(
+            st.session_state.email,
+            st.session_state.name,
+            summary
+        )
+
         if success:
-            st.success("Summary sent successfully! Check your WhatsApp.")
+
+            st.success(
+                "Nutrition summary sent successfully! "
+                "Check your email."
+            )
+
         else:
-            st.error(f"Couldn't send that: {info}")
-st.caption(f"Logged in as{st.session_state.name}-updates move to {st.session_state.whatsapp_number}")
+
+            st.error(
+                f"Couldn't send the email: {info}"
+            )
+
+
+# ============================================================
+# USER INFORMATION
+# ============================================================
+
+st.caption(
+    f"Logged in as {st.session_state.name} "
+    f"• Email: {st.session_state.email}"
+)
+
+
+# ============================================================
+# PERSONALIZED NUTRITION DASHBOARD
+# ============================================================
+
+st.subheader(
+    "🎯 Personalized Daily Nutrition Target"
+)
+
+st.write(
+    f"**Weight:** {st.session_state.weight} kg"
+)
+
+st.write(
+    f"**Goal:** {st.session_state.goal}"
+)
+
+
+st.table(
+    {
+        "Nutrient": [
+            "Calories",
+            "Protein",
+            "Carbohydrates",
+            "Fat",
+            "Fiber"
+        ],
+
+        "Daily Target": [
+            f"{targets['Calories']} kcal",
+            f"{targets['Protein']} g",
+            f"{targets['Carbohydrates']} g",
+            f"{targets['Fat']} g",
+            f"{targets['Fiber']} g"
+        ]
+    }
+)
+
+
+# ============================================================
+# INITIAL WELCOME MESSAGE
+# ============================================================
 
 if not st.session_state.messages:
-    add_message("assistant","text",WELCOME_MESSAGE_TEMPLATE.format(name=st.session_state.name))
+
+    add_message(
+        "assistant",
+        "text",
+        WELCOME_MESSAGE_TEMPLATE.format(
+            name=st.session_state.name
+        )
+    )
+
 else:
+
     for message in st.session_state.messages:
+
         render_message(message)
+
+
+# ============================================================
+# CHAT INPUT
+# ============================================================
 
 user_input = st.chat_input(
     "Ask a question, or attach a photo of your meal to get started",
-    placeholder="Type your message here...",
     accept_file=True,
     file_type=["png", "jpg", "jpeg"],
 )
 
-#storing inputs as:
+
+# ============================================================
+# PROCESS USER INPUT
+# ============================================================
+
 if user_input:
-    photo=user_input.files[0] if user_input.files else None
-    text=user_input.text
-    parts=[]
+
+    photo = (
+        user_input.files[0]
+        if user_input.files
+        else None
+    )
+
+    text = user_input.text
+
+    parts = []
+
+
+    # ========================================================
+    # PHOTO INPUT
+    # ========================================================
 
     if photo is not None:
-        photo_bytes=photo.getvalue()
-        add_message("user","image",photo_bytes)
-        parts.append(types.Part.from_bytes(data=photo_bytes, mime_type=photo.type))#instead of huge data splitting into parts and sending 
-    if text:
-        add_message("user","text",text)
-        parts.append(text)
-    elif photo is not None:
-        parts.append("What is this meal? Give me the calories and macros.")#default question if user won't ask question
 
-    with st.spinner("Generating response..."):
-        answer=ask_gemini(parts)
-    add_message("assistant","text",answer)
+        photo_bytes = photo.getvalue()
+
+        add_message(
+            "user",
+            "image",
+            photo_bytes
+        )
+
+        parts.append(
+            types.Part.from_bytes(
+                data=photo_bytes,
+                mime_type=photo.type
+            )
+        )
+
+
+    # ========================================================
+    # TEXT INPUT
+    # ========================================================
+
+    if text:
+
+        add_message(
+            "user",
+            "text",
+            text
+        )
+
+        parts.append(
+            text
+            + """
+
+If this is a food or meal question, analyze the food.
+
+Give the nutrition information in this format:
+
+| Nutrient | Estimated Amount |
+|---|---:|
+| Food | ... |
+| Calories | ... kcal |
+| Protein | ... g |
+| Carbohydrates | ... g |
+| Fat | ... g |
+| Fiber | ... g |
+
+Then explain briefly how this food fits into the user's
+personalized daily nutrition target.
+"""
+        )
+
+
+    # ========================================================
+    # PHOTO WITHOUT QUESTION
+    # ========================================================
+
+    elif photo is not None:
+
+        parts.append(
+            f"""
+Analyze this food or meal.
+
+The user weighs {st.session_state.weight} kg.
+
+The user's goal is:
+{st.session_state.goal}
+
+The user's personalized daily nutrition targets are:
+
+Calories: {targets['Calories']} kcal
+Protein: {targets['Protein']} g
+Carbohydrates: {targets['Carbohydrates']} g
+Fat: {targets['Fat']} g
+Fiber: {targets['Fiber']} g
+
+Give the food analysis using this exact table format:
+
+| Nutrient | Estimated Amount |
+|---|---:|
+| Food | ... |
+| Calories | ... kcal |
+| Protein | ... g |
+| Carbohydrates | ... g |
+| Fat | ... g |
+| Fiber | ... g |
+
+After the table, explain briefly:
+
+1. Whether this food fits the user's daily target.
+2. Which nutrient is relatively high or low.
+3. Whether the user should consider a smaller or larger portion.
+4. Suggest a healthier alternative if appropriate.
+
+Do not make medical claims.
+"""
+        )
+
+
+    # ========================================================
+    # GEMINI RESPONSE
+    # ========================================================
+
+    with st.spinner(
+        "Analyzing your food and generating personalized nutrition..."
+    ):
+
+        answer = ask_gemini(parts)
+
+
+    # ========================================================
+    # SHOW FOOD ANALYSIS
+    # ========================================================
+
+    st.subheader(
+        "🍽️ Food Nutrition Analysis"
+    )
+
+    st.write(answer)
+
+
+    # ========================================================
+    # SHOW PERSONALIZED TARGET AGAIN
+    # ========================================================
+
+    st.subheader(
+        "🎯 Your Personalized Daily Target"
+    )
+
+    st.table(
+        {
+            "Nutrient": [
+                "Calories",
+                "Protein",
+                "Carbohydrates",
+                "Fat",
+                "Fiber"
+            ],
+
+            "Daily Target": [
+                f"{targets['Calories']} kcal",
+                f"{targets['Protein']} g",
+                f"{targets['Carbohydrates']} g",
+                f"{targets['Fat']} g",
+                f"{targets['Fiber']} g"
+            ]
+        }
+    )
+
+
+    # ========================================================
+    # ADD GEMINI RESPONSE TO CHAT
+    # ========================================================
+
+    add_message(
+        "assistant",
+        "text",
+        answer
+    )
