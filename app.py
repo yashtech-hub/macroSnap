@@ -1,4 +1,5 @@
-import json
+import re
+
 from google import genai
 from google.genai import types
 import streamlit as st
@@ -18,6 +19,8 @@ from email_service import send_email
 
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 
+MODEL_NAME = "gemini-3.5-flash-lite"
+
 
 @st.cache_resource
 def get_gemini_client():
@@ -25,8 +28,6 @@ def get_gemini_client():
 
 
 gemini_client = get_gemini_client()
-
-MODEL_NAME = "gemini-3.5-flash"
 
 
 # ============================================================
@@ -91,10 +92,6 @@ def add_message(role, kind, content):
         }
     )
 
-    render_message(
-        st.session_state.messages[-1]
-    )
-
 
 # ============================================================
 # GEMINI FUNCTION
@@ -104,25 +101,41 @@ def ask_gemini(parts):
 
     try:
 
-        return st.session_state.chat.send_message(parts).text
+        response = st.session_state.chat.send_message(parts)
+
+        if response is None:
+            return False, "Gemini returned an empty response."
+
+        if not response.text:
+            return False, "Gemini returned an empty response."
+
+        return True, response.text
 
     except Exception as error:
 
-        return f"Error communicating with Gemini API: {error}"
+        return False, str(error)
 
 
 # ============================================================
-# ONBOARDING
+# INITIAL SESSION STATE
 # ============================================================
 
 if "onboarded" not in st.session_state:
+    st.session_state.onboarded = False
+
+
+# ============================================================
+# ONBOARDING PAGE
+# ============================================================
+
+if not st.session_state.onboarded:
 
     st.title(
         "MacroSnap - AI Powered Macro Generator"
     )
 
     st.caption(
-        "📸 Snap it  |  📊 Track it  |  📧 Email your nutrition summary"
+        "Snap it | Track it | Email your nutrition summary"
     )
 
     with st.form("onboarding_form"):
@@ -155,20 +168,45 @@ if "onboarded" not in st.session_state:
         )
 
         submitted = st.form_submit_button(
-            "Submit"
+            "Submit",
+            use_container_width=True
         )
 
     if submitted:
 
-        if not name.strip() or not email.strip():
+        # --------------------------------------------------------
+        # VALIDATE INPUT
+        # --------------------------------------------------------
+
+        if not name.strip():
+
+            st.error("Please enter your name.")
+
+            st.stop()
+
+        if not email.strip():
+
+            st.error("Please enter your email address.")
+
+            st.stop()
+
+        # Basic email validation
+        email_pattern = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+
+        if not re.match(email_pattern, email.strip()):
 
             st.error(
-                "Please fill in your name and email."
+                "Please enter a valid email address."
             )
 
-        else:
+            st.stop()
 
-            # Save user information
+        # --------------------------------------------------------
+        # CREATE USER SESSION
+        # --------------------------------------------------------
+
+        try:
+
             st.session_state.name = name.strip()
             st.session_state.email = email.strip()
             st.session_state.weight = weight
@@ -180,26 +218,41 @@ if "onboarded" not in st.session_state:
                 goal
             )
 
-            # Create Gemini chat
+            # ----------------------------------------------------
+            # CREATE GEMINI CHAT
+            # ----------------------------------------------------
+
             st.session_state.chat = gemini_client.chats.create(
                 model=MODEL_NAME,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT
-                ),
+                )
             )
 
-            # Initially empty chat
+            # Start with empty messages
             st.session_state.messages = []
 
+            # Mark onboarding as completed
             st.session_state.onboarded = True
 
+            # Move to main application
             st.rerun()
+
+        except Exception as error:
+
+            st.error(
+                "Unable to start MacroSnap."
+            )
+
+            st.code(
+                str(error)
+            )
 
     st.stop()
 
 
 # ============================================================
-# GET PERSONALIZED TARGETS
+# GET USER DATA
 # ============================================================
 
 targets = st.session_state.targets
@@ -228,42 +281,60 @@ with header_col:
 
 with button_col:
 
+    # Only the initial welcome message means
+    # the user has not used the application yet.
     send_disabled = len(
         st.session_state.messages
     ) <= 1
 
     if st.button(
-        "📧 Send Summary to Gmail",
+        "Send Summary to Gmail",
         disabled=send_disabled,
         use_container_width=True
     ):
 
         with st.spinner(
-            "Summarizing your day..."
+            "Generating your nutrition summary..."
         ):
 
-            summary = ask_gemini(
+            gemini_success, summary = ask_gemini(
                 [SUMMARY_REQUEST_PROMPT]
             )
 
-        success, info = send_email(
-            st.session_state.email,
-            st.session_state.name,
-            summary
-        )
+        if not gemini_success:
 
-        if success:
-
-            st.success(
-                "Nutrition summary sent successfully! "
-                "Check your email."
+            st.error(
+                f"Unable to generate the summary: {summary}"
             )
 
         else:
 
-            st.error(
-                f"Couldn't send the email: {info}"
-            )
+            try:
+
+                email_success, email_info = send_email(
+                    st.session_state.email,
+                    "Your MacroSnap Nutrition Summary",
+                    summary
+                )
+
+                if email_success:
+
+                    st.success(
+                        "Nutrition summary sent successfully! "
+                        "Check your email."
+                    )
+
+                else:
+
+                    st.error(
+                        f"Couldn't send the email: {email_info}"
+                    )
+
+            except Exception as error:
+
+                st.error(
+                    f"Couldn't send the email: {error}"
+                )
 
 
 # ============================================================
@@ -281,7 +352,7 @@ st.caption(
 # ============================================================
 
 st.subheader(
-    "🎯 Personalized Daily Nutrition Target"
+    "Personalized Daily Nutrition Target"
 )
 
 st.write(
@@ -315,7 +386,7 @@ st.table(
 
 
 # ============================================================
-# INITIAL WELCOME MESSAGE
+# WELCOME MESSAGE
 # ============================================================
 
 if not st.session_state.messages:
@@ -328,11 +399,14 @@ if not st.session_state.messages:
         )
     )
 
-else:
 
-    for message in st.session_state.messages:
+# ============================================================
+# DISPLAY CHAT HISTORY
+# ============================================================
 
-        render_message(message)
+for message in st.session_state.messages:
+
+    render_message(message)
 
 
 # ============================================================
@@ -342,7 +416,7 @@ else:
 user_input = st.chat_input(
     "Ask a question, or attach a photo of your meal to get started",
     accept_file=True,
-    file_type=["png", "jpg", "jpeg"],
+    file_type=["png", "jpg", "jpeg"]
 )
 
 
@@ -467,6 +541,19 @@ Do not make medical claims.
 
 
     # ========================================================
+    # CHECK INPUT
+    # ========================================================
+
+    if not parts:
+
+        st.warning(
+            "Please enter a question or upload a food image."
+        )
+
+        st.stop()
+
+
+    # ========================================================
     # GEMINI RESPONSE
     # ========================================================
 
@@ -474,55 +561,69 @@ Do not make medical claims.
         "Analyzing your food and generating personalized nutrition..."
     ):
 
-        answer = ask_gemini(parts)
+        gemini_success, answer = ask_gemini(parts)
 
 
-    # ========================================================
-    # SHOW FOOD ANALYSIS
-    # ========================================================
+    if not gemini_success:
 
-    st.subheader(
-        "🍽️ Food Nutrition Analysis"
-    )
+        st.error(
+            f"Unable to get a response from Gemini: {answer}"
+        )
 
-    st.write(answer)
+    else:
 
+        # ----------------------------------------------------
+        # SAVE GEMINI RESPONSE
+        # ----------------------------------------------------
 
-    # ========================================================
-    # SHOW PERSONALIZED TARGET AGAIN
-    # ========================================================
+        add_message(
+            "assistant",
+            "text",
+            answer
+        )
 
-    st.subheader(
-        "🎯 Your Personalized Daily Target"
-    )
+        # ----------------------------------------------------
+        # SHOW FOOD ANALYSIS
+        # ----------------------------------------------------
 
-    st.table(
-        {
-            "Nutrient": [
-                "Calories",
-                "Protein",
-                "Carbohydrates",
-                "Fat",
-                "Fiber"
-            ],
+        st.subheader(
+            "Food Nutrition Analysis"
+        )
 
-            "Daily Target": [
-                f"{targets['Calories']} kcal",
-                f"{targets['Protein']} g",
-                f"{targets['Carbohydrates']} g",
-                f"{targets['Fat']} g",
-                f"{targets['Fiber']} g"
-            ]
-        }
-    )
+        st.write(answer)
 
+        # ----------------------------------------------------
+        # SHOW PERSONALIZED TARGET
+        # ----------------------------------------------------
 
-    # ========================================================
-    # ADD GEMINI RESPONSE TO CHAT
-    # ========================================================
+        st.subheader(
+            "Your Personalized Daily Target"
+        )
 
-    add_message(
-        "assistant",
-        "text",
-        answer
-    )
+        st.table(
+            {
+                "Nutrient": [
+                    "Calories",
+                    "Protein",
+                    "Carbohydrates",
+                    "Fat",
+                    "Fiber"
+                ],
+
+                "Daily Target": [
+                    f"{targets['Calories']} kcal",
+                    f"{targets['Protein']} g",
+                    f"{targets['Carbohydrates']} g",
+                    f"{targets['Fat']} g",
+                    f"{targets['Fiber']} g"
+                ]
+            }
+        )
+
+        # ----------------------------------------------------
+        # RERUN
+        # ----------------------------------------------------
+
+        # This makes the Gmail button immediately update
+        # after the first user interaction.
+        st.rerun()
