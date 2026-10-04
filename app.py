@@ -131,7 +131,7 @@ if "onboarded" not in st.session_state:
 if not st.session_state.onboarded:
 
     st.title(
-        "MacroSnap - AI Powered Macro Generator"
+        "MacroSnap - AI Nutrition Vision Chatbot"
     )
 
     st.caption(

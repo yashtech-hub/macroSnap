@@ -1,4 +1,4 @@
-# MacroSnap
+# MacroSnap – AI Nutrition Vision Chatbot
 
 MacroSnap is an AI-based nutrition assistant that analyzes food images and provides estimated nutritional information. Users can upload an image of their meal, ask questions about the food, view estimated calories and macronutrients, and receive a nutrition summary through email.
 
