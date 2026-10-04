@@ -1,4 +1,3 @@
-
 #all this files are ignored by git
 .streamlit/secrets.toml
 venv/
